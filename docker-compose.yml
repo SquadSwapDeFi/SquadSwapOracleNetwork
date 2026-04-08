@@ -1,0 +1,13 @@
+services:
+  son-node:
+    image: ghcr.io/squadswapdefi/son-node:latest
+    container_name: son-node
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
