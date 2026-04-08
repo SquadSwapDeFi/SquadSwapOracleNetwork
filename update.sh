@@ -27,6 +27,8 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
   exit 1
 fi
 
+trap 'rm -f /tmp/son-checksums.sha256' EXIT
+
 echo -e "${CYAN}[INFO]${NC} Updating docker-compose.yml..."
 curl -fsSL "$COMPOSE_URL" -o "$INSTALL_DIR/docker-compose.yml"
 curl -fsSL "$CHECKSUMS_URL" -o /tmp/son-checksums.sha256
@@ -44,7 +46,6 @@ else
   rm -f "$INSTALL_DIR/docker-compose.yml"
   exit 1
 fi
-rm -f /tmp/son-checksums.sha256
 
 echo -e "${CYAN}[INFO]${NC} Pulling latest image and restarting..."
 cd "$INSTALL_DIR"

@@ -30,6 +30,8 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+trap 'rm -f /tmp/son-checksums.sha256' EXIT
+
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  Squad Oracle Network — Node Setup${NC}"
@@ -112,7 +114,6 @@ else
   rm -f "$INSTALL_DIR/docker-compose.yml"
   exit 1
 fi
-rm -f /tmp/son-checksums.sha256
 
 # ── 6. Pull image ──
 info "Pulling $IMAGE ..."
