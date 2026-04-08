@@ -107,7 +107,10 @@ if [ -n "$EXPECTED" ]; then
   fi
   ok "Checksum verified"
 else
-  warn "No checksum found — skipping verification"
+  err "Checksum entry for docker-compose.yml not found in checksums.sha256"
+  err "The checksum file may be corrupt or tampered with. Aborting."
+  rm -f "$INSTALL_DIR/docker-compose.yml"
+  exit 1
 fi
 rm -f /tmp/son-checksums.sha256
 

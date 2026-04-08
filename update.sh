@@ -40,7 +40,9 @@ if [ -n "$EXPECTED" ]; then
   fi
   echo -e "${GREEN}[OK]${NC} Checksum verified"
 else
-  echo -e "${CYAN}[INFO]${NC} No checksum found — skipping verification"
+  echo -e "${RED}[ERROR]${NC} Checksum entry for docker-compose.yml not found. Aborting." >&2
+  rm -f "$INSTALL_DIR/docker-compose.yml"
+  exit 1
 fi
 rm -f /tmp/son-checksums.sha256
 
