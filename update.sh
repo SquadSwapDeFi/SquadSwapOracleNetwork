@@ -10,6 +10,7 @@ INSTALL_DIR="/opt/son-node"
 IMAGE="ghcr.io/squadswapdefi/son-node:latest"
 REPO_BASE="https://raw.githubusercontent.com/SquadSwapDeFi/SquadSwapOracleNetwork/main"
 COMPOSE_URL="${REPO_BASE}/docker-compose.yml"
+ENV_EXAMPLE_URL="${REPO_BASE}/.env.example"
 CHECKSUMS_URL="${REPO_BASE}/checksums.sha256"
 
 GREEN='\033[0;32m'
@@ -27,7 +28,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
   exit 1
 fi
 
-trap 'rm -f /tmp/son-checksums.sha256' EXIT
+trap 'rm -f /tmp/son-checksums.sha256 /tmp/son-env-example' EXIT
 
 echo -e "${CYAN}[INFO]${NC} Updating docker-compose.yml..."
 curl -fsSL "$COMPOSE_URL" -o "$INSTALL_DIR/docker-compose.yml"
@@ -45,6 +46,30 @@ else
   echo -e "${RED}[ERROR]${NC} Checksum entry for docker-compose.yml not found. Aborting." >&2
   rm -f "$INSTALL_DIR/docker-compose.yml"
   exit 1
+fi
+
+# ── Sync new env vars from .env.example into existing .env ──
+echo -e "${CYAN}[INFO]${NC} Checking for new config variables..."
+if curl -fsSL "$ENV_EXAMPLE_URL" -o /tmp/son-env-example 2>/dev/null; then
+  ADDED=0
+  while IFS= read -r line; do
+    # Skip comments and blank lines
+    [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+    KEY="${line%%=*}"
+    # If key doesn't exist in current .env, append it
+    if ! grep -q "^${KEY}=" "$INSTALL_DIR/.env" 2>/dev/null; then
+      echo "$line" >> "$INSTALL_DIR/.env"
+      echo -e "${GREEN}[NEW]${NC} Added config: ${KEY}"
+      ADDED=$((ADDED + 1))
+    fi
+  done < /tmp/son-env-example
+  if [ "$ADDED" -eq 0 ]; then
+    echo -e "${GREEN}[OK]${NC} Config up to date"
+  else
+    echo -e "${GREEN}[OK]${NC} Added $ADDED new config variable(s)"
+  fi
+else
+  echo -e "${CYAN}[INFO]${NC} Could not fetch .env.example — skipping config sync"
 fi
 
 echo -e "${CYAN}[INFO]${NC} Pulling latest image and restarting..."
