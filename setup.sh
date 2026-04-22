@@ -91,6 +91,56 @@ else
   warn "View key: sudo cat $INSTALL_DIR/.env | grep OPERATOR_PRIVATE_KEY"
 fi
 
+# ── 4b. Pre-create the P2P data directory for the libp2p identity volume.
+#     The container runs as the unprivileged `son` user (uid 10001 in the
+#     alpine image). Make the host dir world-writable only for that uid —
+#     avoids "permission denied" on first libp2p key write while keeping
+#     the key readable only by its owner.
+mkdir -p "$INSTALL_DIR/p2p-data"
+# 10001 matches the son user created in packages/node/Dockerfile. If the
+# Dockerfile user is ever changed, update this to match.
+# Surface chown failures: if the container can't write its libp2p identity
+# file, every restart generates a fresh peerId and silently invalidates
+# every other operator's bootstrap entry for this node — that's worse than
+# a visible setup error. Swallowing with `|| true` used to hide this.
+if ! chown -R 10001:10001 "$INSTALL_DIR/p2p-data"; then
+  err "Failed to chown $INSTALL_DIR/p2p-data to 10001:10001."
+  err "The container runs as UID 10001 and needs ownership to persist its"
+  err "libp2p identity. Without this, the peerId will change on every"
+  err "restart and break other operators' P2P_BOOTSTRAP_NODES entries."
+  err "Fix the filesystem permissions and re-run setup.sh."
+  exit 1
+fi
+chmod 700 "$INSTALL_DIR/p2p-data"
+ok "P2P identity volume ready at $INSTALL_DIR/p2p-data"
+
+# ── 4c. Time sync sanity check ──
+# The consensus layer rejects proposals whose timestamp is off by more than
+# proposalMaxAgeSec (120s) from the follower's local clock. Two operators
+# whose system clocks drift beyond that window will see every one of their
+# rounds fail validation — a silent class of outage that's easy to miss if
+# nothing surfaces the clock delta.
+#
+# On stock Ubuntu 24.04 (the DO one-click image) systemd-timesyncd is active
+# by default, so this is mostly a warn-if-misconfigured check rather than an
+# install step. If timedatectl reports the system clock as unsynchronized,
+# we surface it loudly so the operator fixes it before chasing phantom
+# consensus bugs. Not fatal — the node may still start and sync on its own.
+if command -v timedatectl &>/dev/null; then
+  TD_STATUS=$(timedatectl show --property=NTPSynchronized --value 2>/dev/null || echo "")
+  if [ "$TD_STATUS" = "yes" ]; then
+    ok "System clock is NTP-synchronized"
+  else
+    warn "System clock is NOT NTP-synchronized (NTPSynchronized=${TD_STATUS:-unknown})."
+    warn "Consensus rejects proposals whose timestamps drift >120s from peers."
+    warn "Enable time sync: sudo timedatectl set-ntp true"
+    warn "Verify once synced: timedatectl status"
+  fi
+else
+  warn "timedatectl not found — can't verify NTP sync. Ensure system clock is"
+  warn "within a few seconds of UTC, or consensus will reject this node's proposals."
+fi
+
 # ── 5. Download docker-compose.yml with checksum verification ──
 info "Downloading docker-compose.yml..."
 curl -fsSL "$COMPOSE_URL" -o "$INSTALL_DIR/docker-compose.yml"
@@ -146,11 +196,70 @@ systemctl start son-node
 ok "systemd service created and started"
 
 # ── 8. Firewall ──
+# Three rules, all `ufw limit` (per-source-IP rate cap of 6 new connections in
+# 30 seconds). The rate-limit absorbs brute-force / flood traffic without
+# blocking legitimate use:
+#
+#   SSH   — MUST be first. ufw's default-deny policy kicks in the moment the
+#           operator runs `ufw enable`; if no SSH rule exists at that point
+#           the running SSH session gets dropped and the droplet becomes
+#           unreachable except via the DO web console. Pre-staging the rule
+#           guarantees SSH stays reachable across any later `ufw enable`.
+#   9090  — HTTP API (/health, /metrics). Dashboard reads from here; the data
+#           (prices, submission counts, operator wallet) is already public
+#           on-chain, so exposing the port is intentional — Bearer-token auth
+#           would be security theater on non-sensitive data. /logs stays gated
+#           behind LOGS_TOKEN inside the application, which IS sensitive.
+#   9091  — libp2p gossipsub. Public by necessity (peers dial in); rate-limit
+#           neutralizes SYN-flood / connection-storm style abuse.
+#
+# We never auto-run `ufw enable` — that's the operator's call. Whether or not
+# ufw is active, the rules are staged so that a future `enable` is safe.
 if command -v ufw &>/dev/null; then
-  ufw allow 9090/tcp comment "SON Node API" >/dev/null 2>&1 || true
-  ok "Firewall: port 9090 opened"
+  # Detect the actual SSH port from sshd_config (default 22). Some operators
+  # move SSH to a non-standard port for obscurity; limiting "22" in that case
+  # would do nothing useful.
+  SSH_PORT=$(grep -oE "^[[:space:]]*Port[[:space:]]+[0-9]+" /etc/ssh/sshd_config 2>/dev/null \
+    | awk '{print $2}' | tail -n1)
+  SSH_PORT=${SSH_PORT:-22}
+
+  # Idempotent ufw rule install. Keeps re-runs of setup.sh clean — without
+  # this guard, running setup.sh twice would append a second LIMIT rule with
+  # the same port+action, which bloats `ufw status` and confuses audits.
+  # Uses `ufw show added` rather than `ufw status` because staged rules don't
+  # appear in status until ufw is enabled.
+  ensure_limit() {
+    local port_proto="$1" description="$2"
+    if ufw show added 2>/dev/null | grep -qE "ufw limit ${port_proto}\b"; then
+      ok "Firewall: ${port_proto} already rate-limited (${description})"
+      return 0
+    fi
+    # Drop any pre-existing ALLOW for the same port so the LIMIT doesn't get
+    # shadowed (ALLOW matches first in ufw's rule order).
+    ufw delete allow "${port_proto}" >/dev/null 2>&1 || true
+    if ufw limit "${port_proto}" comment "${description}" >/dev/null 2>&1; then
+      ok "Firewall: ufw LIMIT rule added for ${port_proto} (${description})"
+    else
+      warn "ufw present but failed to add ${port_proto} rule"
+    fi
+  }
+
+  ensure_limit "${SSH_PORT}/tcp" "SSH (rate-limited)"
+  ensure_limit "9090/tcp"        "SON HTTP API (rate-limited)"
+  ensure_limit "9091/tcp"        "SON libp2p gossipsub (rate-limited)"
+
+  # Warn if ufw is installed but inactive so the operator understands the rules
+  # above aren't actually enforcing anything until they enable it.
+  if ! ufw status 2>/dev/null | grep -q "Status: active"; then
+    warn "ufw is installed but INACTIVE — rules above are staged, not enforced."
+    warn "Before running 'sudo ufw enable', verify with 'sudo ufw status verbose' that"
+    warn "SSH (${SSH_PORT}/tcp) shows up as LIMIT, otherwise enabling will lock you out."
+  fi
 else
-  warn "ufw not found — manually open port 9090 if needed"
+  warn "ufw not found — if you use another firewall (iptables / cloud security group):"
+  warn "  - allow SSH from your admin IP(s)"
+  warn "  - allow 9090/tcp (HTTP API, public-by-design)"
+  warn "  - allow 9091/tcp (libp2p — required for multi-operator P2P)"
 fi
 
 # ── 9. Health check ──
@@ -181,5 +290,39 @@ echo -e "  Restart:      systemctl restart son-node"
 echo -e "  Stop:         systemctl stop son-node"
 echo -e "  Health check: curl http://localhost:9090/health"
 echo -e "  Update:       curl -fsSL https://raw.githubusercontent.com/SquadSwapDeFi/SquadSwapOracleNetwork/main/update.sh | sudo bash"
+echo ""
+# Branch the closing guidance on whether the canonical .env.example shipped a
+# populated bootstrap list or not. If it did, the node auto-joins the mesh
+# with zero extra steps; the operator only needs to share their own multiaddr
+# so it can be added to the canonical list in a future commit. If the list
+# is empty (genesis phase), the first cohort needs to collect peerIds and
+# commit them upstream — after which all nodes re-sync on `update.sh`.
+HAS_BOOTSTRAP=$(grep -E "^P2P_BOOTSTRAP_NODES=[^[:space:]]+" "$INSTALL_DIR/.env" 2>/dev/null || true)
+
+echo -e "  ${CYAN}Multi-operator P2P is enabled by default:${NC}"
+if [ -n "$HAS_BOOTSTRAP" ]; then
+  echo -e "  ✓ Bootstrap peers pre-configured from the repo's canonical list — this node"
+  echo -e "    will auto-join the mesh. Confirm peers connected after a minute:"
+  echo -e "       docker compose -f $INSTALL_DIR/docker-compose.yml logs --tail 200 | grep -E 'peerId|Multi-op round'"
+  echo ""
+  echo -e "  To have YOUR node added to the canonical list (so future operators auto-dial"
+  echo -e "  you on install):"
+  echo -e "    1. Get your peerId:"
+  echo -e "       docker compose -f $INSTALL_DIR/docker-compose.yml logs --tail 200 | grep peerId"
+  echo -e "    2. Share your full multiaddr with the team:"
+  echo -e "       /ip4/<this-server-public-ip>/tcp/9091/p2p/<peerId>"
+  echo -e "    3. It will be merged into .env.example in the repo; every node picks it up"
+  echo -e "       on the next 'sudo bash update.sh' run."
+else
+  echo -e "  No bootstrap peers configured yet (genesis phase)."
+  echo -e "  1. Get your peerId:"
+  echo -e "     docker compose -f $INSTALL_DIR/docker-compose.yml logs --tail 200 | grep peerId"
+  echo -e "  2. Share your multiaddr with the other operators:"
+  echo -e "     /ip4/<this-server-public-ip>/tcp/9091/p2p/<peerId>"
+  echo -e "  3. Once all peerIds are collected, commit them into .env.example's"
+  echo -e "     P2P_BOOTSTRAP_NODES (comma-separated) in the repo and push."
+  echo -e "  4. Every node running 'sudo bash update.sh' will then pick up the canonical"
+  echo -e "     list automatically and join the mesh."
+fi
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"

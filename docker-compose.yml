@@ -6,6 +6,17 @@ services:
     env_file: .env
     ports:
       - "9090:9090"
+      # libp2p gossipsub. Only actually listened on when P2P_ENABLED=true in
+      # .env; for single-operator setups the port is exposed but idle. Leave
+      # the mapping here so operators moving to multi-op mode don't have to
+      # remember to edit compose too — just flip the env flag + restart.
+      - "9091:9091"
+    volumes:
+      # Persists the libp2p peer identity so the node's multiaddr (the /p2p/...
+      # suffix) stays stable across container restarts. Without this, other
+      # operators' P2P_BOOTSTRAP_NODES entries would go stale on every restart.
+      # Pre-created with 0700 perms by setup.sh so the son user can write to it.
+      - "/opt/son-node/p2p-data:/data"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
       interval: 30s
