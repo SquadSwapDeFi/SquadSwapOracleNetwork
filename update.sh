@@ -18,6 +18,16 @@ CYAN='\033[0;36m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Diagnose silent exits caused by `set -e`. Without this trap, a bash strict-
+# mode trip in the middle of the script (e.g. a piped grep that returns 1
+# under pipefail in a context where set -e fires) terminates with no output —
+# the operator sees the prompt return after a partial run and has no idea
+# which step bailed. The trap captures the failed command + line number so a
+# repeat run produces an actionable error line instead of looking like a
+# normal exit. Trap is intentionally narrow (only ERR) so legitimate exit-0
+# paths stay quiet.
+trap 'rc=$?; echo -e "${RED}[ERROR]${NC} update.sh exited at line ${LINENO} (exit ${rc}): ${BASH_COMMAND}" >&2; exit "$rc"' ERR
+
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}[ERROR]${NC} Please run as root: sudo bash update.sh" >&2
   exit 1
