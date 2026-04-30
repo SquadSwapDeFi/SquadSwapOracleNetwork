@@ -11,11 +11,23 @@ services:
       # the mapping here so operators moving to multi-op mode don't have to
       # remember to edit compose too — just flip the env flag + restart.
       - "9091:9091"
+    environment:
+      # R11 #2: pin evidence to the persistent volume below so a stock setup
+      # never lands on ephemeral container storage. Override-able for advanced
+      # operators who mount evidence elsewhere — but the default has to be
+      # safe, because losing equivocation evidence on container restart erases
+      # the only off-chain artifact slashing transactions can reference.
+      SON_EVIDENCE_DIR: /data/evidence
     volumes:
       # Persists the libp2p peer identity so the node's multiaddr (the /p2p/...
       # suffix) stays stable across container restarts. Without this, other
       # operators' P2P_BOOTSTRAP_NODES entries would go stale on every restart.
       # Pre-created with 0700 perms by setup.sh so the son user can write to it.
+      #
+      # R11 #2: ALSO holds equivocation evidence under /data/evidence (see
+      # SON_EVIDENCE_DIR above). The same volume is reused intentionally — one
+      # less mount point operators need to remember, and slashing evidence
+      # has the same persistence requirement as the peerId.
       - "/opt/son-node/p2p-data:/data"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/health"]
