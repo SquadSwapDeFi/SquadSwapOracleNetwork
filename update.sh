@@ -152,8 +152,18 @@ FIREWALL_WARN=""
 if command -v ufw &>/dev/null; then
   # Detect the actual SSH port from sshd_config (default 22). If the operator
   # moved SSH to a non-standard port, limiting 22 would do nothing useful.
+  #
+  # `|| true` is mandatory: most stock sshd_config files ship with the Port
+  # directive commented out (`#Port 22`). The `^...Port` regex won't match
+  # the leading `#`, so grep returns 0 hits → exit 1 → with `set -o pipefail`
+  # the pipe exits 1 → the surrounding `set -e` tears the script down right
+  # before the docker-compose pull/restart step. The script reported "[OK]
+  # Added 3 new config variable(s)" and then died silently — operators saw
+  # the prompt return and assumed the upgrade landed. The fallback below
+  # already handles the empty-string case (`${SSH_PORT:-22}`), so absorbing
+  # the pipe failure is the correct fix.
   SSH_PORT=$(grep -oE "^[[:space:]]*Port[[:space:]]+[0-9]+" /etc/ssh/sshd_config 2>/dev/null \
-    | awk '{print $2}' | tail -n1)
+    | awk '{print $2}' | tail -n1 || true)
   SSH_PORT=${SSH_PORT:-22}
 
   # ensure_limit <port>/tcp <description>: idempotent migration helper.
