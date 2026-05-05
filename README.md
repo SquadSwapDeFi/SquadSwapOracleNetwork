@@ -30,7 +30,19 @@ This will:
 2. **Import the key** into MetaMask or your preferred wallet to see your address
 3. **Send BNB** to the wallet (for gas fees)
 4. **Send SQUAD** tokens to the wallet (for staking)
-5. **Stake** at [oracle.squadswap.com](https://oracle.squadswap.com)
+5. **Register & stake** on the [Staking page](https://oracle.squadswap.com/dashboard/staking) — approve SQUAD, then register as an operator
+6. **Subscribe to feeds** on the same page — under *Feed Subscriptions* on the right, click **Subscribe** for each feed you want to serve (e.g. XMR/USD, SQUAD/USD)
+
+> **Step 6 is required.** Staking alone does not enroll you in any feed. Without a subscription the contract treats your node as unauthorized for that feed — every submission attempt reverts and burns gas while no rewards accrue. The dashboard will show you "Active" in the operator list but with `0 feeds` until you subscribe.
+
+**Verify it worked:**
+
+```bash
+# Health endpoint should list the feeds you subscribed to and a recent lastUpdate
+curl -s http://localhost:9090/health | jq '.feeds[] | {pair, lastUpdate, lastRound}'
+```
+
+First on-chain submission lands within a few minutes for CEX-only feeds (XMR/USD); SQUAD/USD takes ~24 minutes after node start because the cumulative-price TWAP needs to fill its 30-minute window.
 
 ## Minimum Requirements
 
