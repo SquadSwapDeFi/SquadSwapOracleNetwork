@@ -127,9 +127,16 @@ fi
 #
 # We detect once and write the result to .env; subsequent runs leave the
 # stored value alone (operators may have set it manually for split-horizon
-# DNS, IPv6, or relay setups). To force re-detection, comment out the line
-# in .env and re-run update.sh.
-if ! grep -qE "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env" 2>/dev/null; then
+# DNS, IPv6, or relay setups). To force re-detection, blank the line in
+# .env and re-run update.sh.
+#
+# IMPORTANT: this check looks for a NON-EMPTY value, not just the key. The
+# .env-example sync block earlier in the script seeds an empty
+# `P2P_PUBLIC_IP=` line; without the value-presence check below, detection
+# would skip on every run because the (empty) key is technically present.
+EXISTING_PUBLIC_IP=$(grep -E "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env" 2>/dev/null \
+  | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)
+if [ -z "$EXISTING_PUBLIC_IP" ]; then
   # Try multiple resolvers — ipify, then icanhazip — so a single provider
   # outage doesn't block updates. Each call has a 3s timeout; if both fail
   # we leave P2P_PUBLIC_IP unset and warn the operator. The node will still
@@ -143,13 +150,20 @@ if ! grep -qE "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env" 2>/dev/null; the
   # Validate as IPv4 dotted-quad before writing — a junk string here would
   # turn into a malformed multiaddr and break libp2p init at startup.
   if [[ "$DETECTED_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    printf '\nP2P_PUBLIC_IP=%s\n' "$DETECTED_IP" >> "$INSTALL_DIR/.env"
+    # Update or append. The empty seed from .env.example sync needs an
+    # in-place replacement; a missing key needs an append. sed delimiter
+    # '|' avoids escaping issues with potential characters in the value.
+    if grep -qE "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env"; then
+      sed -i "s|^[[:space:]]*P2P_PUBLIC_IP=.*|P2P_PUBLIC_IP=${DETECTED_IP}|" "$INSTALL_DIR/.env"
+    else
+      printf '\nP2P_PUBLIC_IP=%s\n' "$DETECTED_IP" >> "$INSTALL_DIR/.env"
+    fi
     chmod 600 "$INSTALL_DIR/.env"
     echo -e "${GREEN}[OK]${NC} Detected public IP: ${DETECTED_IP} (saved to .env as P2P_PUBLIC_IP)"
   else
     echo -e "${CYAN}[INFO]${NC} Could not detect public IP automatically. The node will still run, but"
     echo -e "${CYAN}[INFO]${NC} other operators outside your bootstrap list won't be able to dial you."
-    echo -e "${CYAN}[INFO]${NC} Set it manually: echo 'P2P_PUBLIC_IP=<your-ip>' | sudo tee -a $INSTALL_DIR/.env"
+    echo -e "${CYAN}[INFO]${NC} Set it manually: edit $INSTALL_DIR/.env and set P2P_PUBLIC_IP=<your-ipv4>"
   fi
 fi
 

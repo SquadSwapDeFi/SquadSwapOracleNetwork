@@ -99,18 +99,28 @@ fi
 # update.sh handles the same logic for existing installs that pre-date
 # this change. Idempotent: if the operator already set the value (manual
 # IPv6, relay setup, etc), we don't overwrite.
-if ! grep -qE "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env" 2>/dev/null; then
+# Look for a NON-EMPTY value, not just the key — the .env shipped with the
+# repo contains an empty `P2P_PUBLIC_IP=` placeholder that should be filled
+# automatically here. Without this check we'd treat the empty seed as
+# "already set" and never auto-detect.
+EXISTING_PUBLIC_IP=$(grep -E "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env" 2>/dev/null \
+  | tail -n1 | cut -d= -f2- | tr -d '[:space:]' || true)
+if [ -z "$EXISTING_PUBLIC_IP" ]; then
   DETECTED_IP=$(curl -fsSL -m 3 https://api.ipify.org 2>/dev/null \
     || curl -fsSL -m 3 https://icanhazip.com 2>/dev/null \
     || true)
   DETECTED_IP=$(printf '%s' "$DETECTED_IP" | tr -d '[:space:]')
   if [[ "$DETECTED_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    printf '\nP2P_PUBLIC_IP=%s\n' "$DETECTED_IP" >> "$INSTALL_DIR/.env"
+    if grep -qE "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env"; then
+      sed -i "s|^[[:space:]]*P2P_PUBLIC_IP=.*|P2P_PUBLIC_IP=${DETECTED_IP}|" "$INSTALL_DIR/.env"
+    else
+      printf '\nP2P_PUBLIC_IP=%s\n' "$DETECTED_IP" >> "$INSTALL_DIR/.env"
+    fi
     chmod 600 "$INSTALL_DIR/.env"
     ok "Detected public IP: ${DETECTED_IP} (saved to .env as P2P_PUBLIC_IP)"
   else
     warn "Could not detect public IP automatically. Set it manually in $INSTALL_DIR/.env"
-    warn "  echo 'P2P_PUBLIC_IP=<your-public-ipv4>' | sudo tee -a $INSTALL_DIR/.env"
+    warn "  edit $INSTALL_DIR/.env and set P2P_PUBLIC_IP=<your-public-ipv4>"
   fi
 fi
 
