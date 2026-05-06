@@ -119,6 +119,40 @@ if [ "$ENV_EXAMPLE_FETCHED" -eq 1 ]; then
   fi
 fi
 
+# ── Auto-detect this host's public IP and persist it as P2P_PUBLIC_IP ──
+# Without this, libp2p only knows about the container's loopback (127.0.0.1)
+# and Docker bridge IP (172.x.x.x). pubsub-peer-discovery would broadcast
+# those non-routable addrs to other operators, who then cannot dial back —
+# so the mesh fragments and BFT quorum stalls.
+#
+# We detect once and write the result to .env; subsequent runs leave the
+# stored value alone (operators may have set it manually for split-horizon
+# DNS, IPv6, or relay setups). To force re-detection, comment out the line
+# in .env and re-run update.sh.
+if ! grep -qE "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env" 2>/dev/null; then
+  # Try multiple resolvers — ipify, then icanhazip — so a single provider
+  # outage doesn't block updates. Each call has a 3s timeout; if both fail
+  # we leave P2P_PUBLIC_IP unset and warn the operator. The node will still
+  # run (single-IP bootstrap meshes work) but won't be discoverable to
+  # operators outside its bootstrap list.
+  DETECTED_IP=$(curl -fsSL -m 3 https://api.ipify.org 2>/dev/null \
+    || curl -fsSL -m 3 https://icanhazip.com 2>/dev/null \
+    || true)
+  # Strip whitespace (icanhazip returns a trailing newline, ipify doesn't).
+  DETECTED_IP=$(printf '%s' "$DETECTED_IP" | tr -d '[:space:]')
+  # Validate as IPv4 dotted-quad before writing — a junk string here would
+  # turn into a malformed multiaddr and break libp2p init at startup.
+  if [[ "$DETECTED_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    printf '\nP2P_PUBLIC_IP=%s\n' "$DETECTED_IP" >> "$INSTALL_DIR/.env"
+    chmod 600 "$INSTALL_DIR/.env"
+    echo -e "${GREEN}[OK]${NC} Detected public IP: ${DETECTED_IP} (saved to .env as P2P_PUBLIC_IP)"
+  else
+    echo -e "${CYAN}[INFO]${NC} Could not detect public IP automatically. The node will still run, but"
+    echo -e "${CYAN}[INFO]${NC} other operators outside your bootstrap list won't be able to dial you."
+    echo -e "${CYAN}[INFO]${NC} Set it manually: echo 'P2P_PUBLIC_IP=<your-ip>' | sudo tee -a $INSTALL_DIR/.env"
+  fi
+fi
+
 # ── Make sure the libp2p identity volume exists and is owned by the container
 #    user. Fresh installs created this in setup.sh; old installs upgrading into
 #    the P2P build need it too, so idempotent-create here.

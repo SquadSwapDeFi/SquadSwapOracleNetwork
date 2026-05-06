@@ -91,6 +91,29 @@ else
   warn "View key: sudo cat $INSTALL_DIR/.env | grep OPERATOR_PRIVATE_KEY"
 fi
 
+# ── Auto-detect this host's public IP and persist as P2P_PUBLIC_IP ──
+# Mirrors the same block in update.sh — see that script for the full
+# rationale. In short: libp2p inside Docker only knows about loopback +
+# bridge IPs, so without this the node broadcasts unroutable multiaddrs
+# and the gossipsub mesh fragments. We write once here for fresh installs;
+# update.sh handles the same logic for existing installs that pre-date
+# this change. Idempotent: if the operator already set the value (manual
+# IPv6, relay setup, etc), we don't overwrite.
+if ! grep -qE "^[[:space:]]*P2P_PUBLIC_IP=" "$INSTALL_DIR/.env" 2>/dev/null; then
+  DETECTED_IP=$(curl -fsSL -m 3 https://api.ipify.org 2>/dev/null \
+    || curl -fsSL -m 3 https://icanhazip.com 2>/dev/null \
+    || true)
+  DETECTED_IP=$(printf '%s' "$DETECTED_IP" | tr -d '[:space:]')
+  if [[ "$DETECTED_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    printf '\nP2P_PUBLIC_IP=%s\n' "$DETECTED_IP" >> "$INSTALL_DIR/.env"
+    chmod 600 "$INSTALL_DIR/.env"
+    ok "Detected public IP: ${DETECTED_IP} (saved to .env as P2P_PUBLIC_IP)"
+  else
+    warn "Could not detect public IP automatically. Set it manually in $INSTALL_DIR/.env"
+    warn "  echo 'P2P_PUBLIC_IP=<your-public-ipv4>' | sudo tee -a $INSTALL_DIR/.env"
+  fi
+fi
+
 # ── 4b. Pre-create the P2P data directory for the libp2p identity volume.
 #     The container runs as the unprivileged `son` user (uid 10001 in the
 #     alpine image). Make the host dir world-writable only for that uid —
