@@ -40,9 +40,30 @@ This will:
 ```bash
 # Health endpoint should list the feeds you subscribed to and a recent lastUpdate
 curl -s http://localhost:9090/health | jq '.feeds[] | {pair, lastUpdate, lastRound}'
+
+# Mesh check — peerCount should rise to (subscribed_operators - 1) within ~10s of startup.
+# If you don't have jq: apt install -y jq, or use:
+curl -s http://localhost:9090/health | grep -o '"peerCount":[0-9]*'
 ```
 
+In the first few minutes of logs you should see one bootstrap dial succeed
+(`p2p: bootstrap dial succeeded …`) followed by additional peers arriving over
+gossip (`p2p: peer:connect …`). The mesh uses `pubsub-peer-discovery`, so once
+you reach **any** of the seed operators you'll learn the rest automatically —
+you do not need to collect every operator's IP by hand.
+
 First on-chain submission lands within a few minutes for CEX-only feeds (XMR/USD); SQUAD/USD takes ~24 minutes after node start because the cumulative-price TWAP needs to fill its 30-minute window.
+
+> **Behind NAT? Don't worry — `setup.sh` auto-detects.** On install, the
+> script queries `api.ipify.org` (with `icanhazip.com` as fallback) and
+> writes the result to `P2P_PUBLIC_IP=` in `/opt/son-node/.env`. `update.sh`
+> back-fills the same value on existing nodes that pre-date this feature.
+> Without it, libp2p inside the container would only know its bridge IP
+> (`172.x.x.x`) and broadcast that to other operators via
+> `pubsub-peer-discovery` — they wouldn't be able to dial back, and your
+> node would stay invisible to ⅔+ of the mesh. If your provider gives
+> you a static public IPv4 with a different egress than the host's NIC,
+> override the auto-detected value manually and `systemctl restart son-node`.
 
 ## Minimum Requirements
 
